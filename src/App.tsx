@@ -145,7 +145,13 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
   );
 };
 
-const AlertModal = ({ isOpen, onClose, event }: { isOpen: boolean, onClose: () => void, event: SystemEvent | null }) => {
+const AlertModal = ({ isOpen, onClose, event, onAcknowledge, onKill }: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  event: SystemEvent | null, 
+  onAcknowledge: (pid: number, name?: string) => void,
+  onKill: (pid: number) => void
+}) => {
   if (!isOpen || !event) return null;
 
   return (
@@ -192,13 +198,19 @@ const AlertModal = ({ isOpen, onClose, event }: { isOpen: boolean, onClose: () =
 
         <div className="flex flex-col gap-2">
           <button 
-            onClick={onClose}
+            onClick={() => {
+              onKill(parseInt(event.id));
+              onClose();
+            }}
             className="w-full py-3 bg-red-600 hover:bg-red-700 text-white text-xs font-bold tracking-widest transition-colors rounded-sm"
           >
             TERMINATE PROCESS
           </button>
           <button 
-            onClick={() => acknowledgeProcess(parseInt(event.id))}
+            onClick={() => {
+              onAcknowledge(parseInt(event.id), event.processName);
+              onClose();
+            }}
             className="w-full py-3 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 text-xs font-bold tracking-widest transition-colors rounded-sm"
           >
             I RECOGNIZE THIS (WHITELIST)
@@ -218,6 +230,7 @@ export default function App() {
   const [events, setEvents] = useState<SystemEvent[]>([]);
   const [files, setFiles] = useState<FileIntegrity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dismissedPids, setDismissedPids] = useState<Set<number>>(new Set());
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -226,6 +239,7 @@ export default function App() {
   const [isForensicLoading, setIsForensicLoading] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [imagePrompt, setImagePrompt] = useState('');
 
   const fetchData = async () => {
     try {
@@ -247,14 +261,15 @@ export default function App() {
       setFiles(fData);
 
       // Check for new unknown processes to trigger alert
-      const unknown = pData.find((p: Process) => p.status === 'unknown');
+      const unknown = pData.find((p: Process) => p.status === 'unknown' && !dismissedPids.has(p.pid));
       if (unknown && !isAlertOpen) {
         setCurrentAlert({
-          id: unknown.id,
+          id: unknown.pid.toString(),
           timestamp: new Date().toLocaleTimeString(),
           type: 'process',
           message: `Unknown Process Detected: ${unknown.name}`,
-          severity: 'high'
+          severity: 'high',
+          processName: unknown.name
         });
         setIsAlertOpen(true);
       }
@@ -295,7 +310,8 @@ export default function App() {
   const handleGenerateVisual = async () => {
     setIsGenerating(true);
     try {
-      const img = await generateThreatVisual("A malicious process spreading through a network grid");
+      const prompt = imagePrompt || "A malicious process spreading through a network grid";
+      const img = await generateThreatVisual(prompt);
       setGeneratedImage(img);
     } catch (error) {
       console.error('Image generation failed:', error);
@@ -310,14 +326,39 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const acknowledgeProcess = async (pid: number) => {
-    await fetch('/api/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pid })
+  const acknowledgeProcess = async (pid: number, name?: string) => {
+    setDismissedPids(prev => {
+      const next = new Set(prev);
+      next.add(pid);
+      return next;
     });
-    setIsAlertOpen(false);
-    fetchData();
+    try {
+      await fetch('/api/acknowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid, name })
+      });
+      setIsAlertOpen(false);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to acknowledge process:', error);
+    }
+  };
+
+  const killProcess = async (pid: number) => {
+    try {
+      const res = await fetch('/api/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid })
+      });
+      if (res.ok) {
+        setIsAlertOpen(false);
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Failed to kill process:', error);
+    }
   };
 
   const chartData = useMemo(() => {
@@ -610,7 +651,11 @@ export default function App() {
                             <button className="p-1.5 hover:bg-zinc-700 rounded-sm text-zinc-400 hover:text-white" title="Inspect">
                               <Info className="w-4 h-4" />
                             </button>
-                            <button className="p-1.5 hover:bg-red-900/30 rounded-sm text-zinc-400 hover:text-red-500" title="Kill Process">
+                            <button 
+                              onClick={() => killProcess(proc.pid)}
+                              className="p-1.5 hover:bg-red-900/30 rounded-sm text-zinc-400 hover:text-red-500" 
+                              title="Kill Process"
+                            >
                               <X className="w-4 h-4" />
                             </button>
                           </div>
@@ -708,18 +753,27 @@ export default function App() {
                   <div className="flex items-center justify-between mb-6">
                     <h3 className="text-sm font-bold tracking-widest flex items-center gap-2">
                       <ImageIcon className="w-5 h-5 text-purple-400" />
-                      THREAT VISUALIZATION (NANO BANANA)
+                      UNFILTERED THREAT VISUALIZER (NANO BANANA)
                     </h3>
-                    <button 
-                      onClick={handleGenerateVisual}
-                      disabled={isGenerating}
-                      className="px-4 py-1.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 text-[10px] font-bold tracking-widest rounded-sm hover:bg-purple-500/20 transition-all disabled:opacity-50"
-                    >
-                      {isGenerating ? 'GENERATING...' : 'VISUALIZE THREAT'}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="text" 
+                        value={imagePrompt}
+                        onChange={(e) => setImagePrompt(e.target.value)}
+                        placeholder="Enter security threat description..."
+                        className="bg-black/40 border border-zinc-800 rounded-sm px-3 py-1.5 text-xs text-zinc-300 focus:border-purple-500/50 outline-none w-64"
+                      />
+                      <button 
+                        onClick={handleGenerateVisual}
+                        disabled={isGenerating}
+                        className="px-4 py-1.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 text-[10px] font-bold tracking-widest rounded-sm hover:bg-purple-500/20 transition-all disabled:opacity-50"
+                      >
+                        {isGenerating ? 'GENERATING...' : 'VISUALIZE'}
+                      </button>
+                    </div>
                   </div>
                   
-                  <div className="aspect-video lg:aspect-[21/9] bg-black/40 border border-zinc-800 rounded-sm flex items-center justify-center overflow-hidden">
+                  <div className="aspect-video lg:aspect-[21/9] bg-black/40 border border-zinc-800 rounded-sm flex items-center justify-center overflow-hidden relative">
                     {isGenerating ? (
                       <div className="flex flex-col items-center gap-4 text-zinc-500">
                         <Loader2 className="w-12 h-12 animate-spin text-purple-400" />
@@ -730,9 +784,12 @@ export default function App() {
                     ) : (
                       <div className="text-center px-12">
                         <Sparkles className="w-16 h-16 text-zinc-800 mx-auto mb-4" />
-                        <p className="text-zinc-600 text-xs italic">Generate a visual representation of the current threat landscape using Gemini Flash Image.</p>
+                        <p className="text-zinc-600 text-xs italic">Generate a visual representation of any security threat using Gemini Flash Image.</p>
                       </div>
                     )}
+                    <div className="absolute bottom-4 right-4 bg-black/80 border border-zinc-800 px-3 py-1 rounded-sm text-[8px] text-zinc-500 font-bold tracking-widest uppercase">
+                      Forensic Mode: High Latitude
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -785,6 +842,8 @@ export default function App() {
         isOpen={isAlertOpen} 
         onClose={() => setIsAlertOpen(false)} 
         event={currentAlert} 
+        onAcknowledge={acknowledgeProcess}
+        onKill={killProcess}
       />
 
       {/* Footer Info */}

@@ -26,10 +26,11 @@ export interface NetworkConnection {
 export interface SystemEvent {
   id: string;
   timestamp: string;
-  type: 'process' | 'network' | 'file' | 'policy' | 'privilege';
+  type: 'process' | 'network' | 'file' | 'policy' | 'privilege' | 'termination';
   message: string;
   severity: Severity;
   details?: string;
+  processName?: string;
 }
 
 export interface FileIntegrity {

@@ -10,8 +10,10 @@ async function startServer() {
 
   // In-memory state for behavioral monitoring
   let knownProcesses: Set<number> = new Set();
+  let knownProcessNames: Set<string> = new Set();
   let events: any[] = [];
   let authorizedPorts: Set<number> = new Set([22, 80, 443, 3000]);
+  let suspiciousPorts: Set<number> = new Set([4444, 6667, 1337, 31337]);
   
   // System whitelist for common Kali/Linux services
   const systemWhitelist = [
@@ -27,8 +29,52 @@ async function startServer() {
     'polkitd',
     'accounts-daemon',
     'cron',
-    'wpa_supplicant'
+    'wpa_supplicant',
+    'atd',
+    'irqbalance',
+    'rsyslogd',
+    'smartd',
+    'agetty',
+    'systemd-journal',
+    'systemd-logind',
+    'systemd-udevd',
+    'systemd-resolved',
+    'systemd-timesyn',
+    'systemd-network',
+    'kworker',
+    'ksoftirqd',
+    'migration',
+    'rcu_sched',
+    'rcu_bh',
+    'kauditd',
+    'bash',
+    'sh',
+    'zsh',
+    'tmux',
+    'screen',
+    'sudo',
+    'su',
+    'ps',
+    'grep',
+    'sed',
+    'awk',
+    'ls',
+    'cat',
+    'tail',
+    'head',
+    'sleep',
+    'watch',
+    'top',
+    'htop',
+    'btop',
+    'npm',
+    'node',
+    'tsx',
+    'vite'
   ];
+
+  // Blacklist for automatic termination
+  let blacklist: string[] = ['rtkit-daemon', 'nc', 'netcat', 'ncat', 'socat'];
 
   // Helper to run shell commands safely
   const runCommand = (cmd: string) => {
@@ -52,9 +98,31 @@ async function startServer() {
       let status: 'recognized' | 'unknown' | 'suspicious' = 'recognized';
       
       // Check if it's in the system whitelist or already known
-      const isWhitelisted = systemWhitelist.some(w => name.includes(w));
+      const isWhitelisted = systemWhitelist.some(w => 
+        name.toLowerCase().includes(w.toLowerCase()) || 
+        (parts.slice(6).join(' ').toLowerCase().includes(w.toLowerCase()))
+      );
+
+      // Automatic termination for blacklisted processes
+      const isBlacklisted = blacklist.some(b => name.includes(b));
+      if (isBlacklisted) {
+        try {
+          runCommand(`kill -9 ${pid}`);
+          const event = {
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toLocaleTimeString(),
+            type: 'termination',
+            message: `AUTO-KILL: Terminated blacklisted process ${name} (PID: ${pid})`,
+            severity: 'high'
+          };
+          if (!events.find(e => e.message === event.message)) {
+            events.unshift(event);
+          }
+          return null; // Don't include in process list
+        } catch (e) {}
+      }
       
-      if (!isWhitelisted && !knownProcesses.has(pid) && knownProcesses.size > 0) {
+      if (!isWhitelisted && !knownProcesses.has(pid) && !knownProcessNames.has(name) && knownProcesses.size > 0) {
         status = 'unknown';
         // Auto-log new process event
         const event = {
@@ -80,11 +148,14 @@ async function startServer() {
         path: parts.slice(6).join(' '),
         status
       };
-    });
+    }).filter((p): p is any => p !== null);
 
     // Update known processes after first run
     if (knownProcesses.size === 0) {
-      currentProcesses.forEach(p => knownProcesses.add(p.pid));
+      currentProcesses.forEach(p => {
+        knownProcesses.add(p.pid);
+        knownProcessNames.add(p.name);
+      });
     }
 
     res.json(currentProcesses);
@@ -100,6 +171,26 @@ async function startServer() {
       const parts = line.trim().split(/\s+/);
       const localAddr = parts[3] || '';
       const port = parseInt(localAddr.split(':').pop() || '0');
+      const processPart = parts[6] || 'unknown';
+      const pidMatch = processPart.match(/(\d+)\//);
+      const pid = pidMatch ? parseInt(pidMatch[1]) : null;
+
+      // Auto-kill suspicious ports
+      if (suspiciousPorts.has(port) && pid) {
+        try {
+          runCommand(`kill -9 ${pid}`);
+          const event = {
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toLocaleTimeString(),
+            type: 'termination',
+            message: `AUTO-KILL: Terminated process (PID: ${pid}) listening on suspicious port ${port}`,
+            severity: 'high'
+          };
+          if (!events.find(e => e.message === event.message)) {
+            events.unshift(event);
+          }
+        } catch (e) {}
+      }
       
       return {
         id: `c${i}`,
@@ -108,7 +199,7 @@ async function startServer() {
         remoteAddress: parts[4] || '0.0.0.0',
         remotePort: 0,
         state: line.includes('LISTEN') ? 'LISTEN' : 'ESTABLISHED',
-        processName: parts[6] || 'unknown',
+        processName: processPart,
         isAuthorized: authorizedPorts.has(port)
       };
     });
@@ -159,9 +250,41 @@ async function startServer() {
 
   // API: Acknowledge/Whitelist
   app.post('/api/acknowledge', express.json(), (req, res) => {
-    const { pid } = req.body;
-    knownProcesses.add(parseInt(pid));
+    const { pid, name } = req.body;
+    const pidNum = parseInt(pid);
+    if (!isNaN(pidNum)) knownProcesses.add(pidNum);
+    if (name) knownProcessNames.add(name);
+    
+    // Remove any events related to this PID or Name to stop "wigging out"
+    events = events.filter(e => 
+      !e.message.includes(`(PID: ${pidNum})`) && 
+      !(name && e.message.includes(`detected: ${name}`))
+    );
+    
     res.json({ success: true });
+  });
+
+  // API: Kill Process
+  app.post('/api/kill', express.json(), (req, res) => {
+    const { pid } = req.body;
+    const pidNum = parseInt(pid);
+    
+    if (isNaN(pidNum)) {
+      return res.status(400).json({ error: 'Invalid PID' });
+    }
+
+    try {
+      // Use SIGKILL for "killer" behavior
+      runCommand(`kill -9 ${pidNum}`);
+      
+      // Remove from known processes and events
+      knownProcesses.delete(pidNum);
+      events = events.filter(e => !e.message.includes(`(PID: ${pidNum})`));
+      
+      res.json({ success: true, message: `Process ${pidNum} terminated.` });
+    } catch (e) {
+      res.status(500).json({ error: `Failed to kill process ${pidNum}` });
+    }
   });
 
   // Vite middleware for development

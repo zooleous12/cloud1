@@ -59,11 +59,11 @@ export async function generateThreatVisual(prompt: string) {
   const response = await ai.models.generateContent({
     model,
     contents: {
-      parts: [{ text: `A futuristic, high-tech security visualization of: ${prompt}. Cyberpunk style, dark background, neon green accents.` }],
+      parts: [{ text: `FORENSIC VISUALIZATION: ${prompt}. Cinematic, high-detail, realistic security surveillance style, dark atmosphere, technical overlays.` }],
     },
     config: {
       imageConfig: {
-        aspectRatio: "1:1",
+        aspectRatio: "16:9",
         imageSize: "1K"
       }
     }

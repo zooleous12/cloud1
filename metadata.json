@@ -1,0 +1,5 @@
+{
+  "name": "Kali Sentry",
+  "description": "A local-first security monitoring dashboard for Kali Linux featuring behavioral analysis, network port auditing, and process integrity tracking.",
+  "requestFramePermissions": []
+}

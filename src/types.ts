@@ -4,6 +4,7 @@ export interface Process {
   id: string;
   name: string;
   pid: number;
+  ppid?: number;
   user: string;
   cpu: number;
   memory: number;

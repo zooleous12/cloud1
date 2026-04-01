@@ -21,7 +21,9 @@ import {
   Video,
   Image as ImageIcon,
   Sparkles,
-  Loader2
+  Loader2,
+  GitGraph,
+  LayoutList
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -38,6 +40,7 @@ import {
 import { cn } from './lib/utils';
 import { MOCK_PROCESSES, MOCK_CONNECTIONS, MOCK_EVENTS, MOCK_FILES } from './mockData';
 import { Process, NetworkConnection, SystemEvent, FileIntegrity, Severity } from './types';
+import { ProcessTree } from './components/ProcessTree';
 import { analyzeSystemState, analyzeForensicMedia, generateThreatVisual } from './services/gemini';
 
 // --- Components ---
@@ -63,8 +66,8 @@ const Header = () => (
         <Shield className="w-6 h-6 text-[#00FF41]" />
       </div>
       <div>
-        <h1 className="text-lg font-bold tracking-tighter terminal-text">KALI_SENTRY v2.4.0</h1>
-        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">Behavioral Intrusion Detection System</p>
+        <h1 className="text-lg font-bold tracking-tighter terminal-text uppercase">One Man Computer v1.0.0</h1>
+        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">Single Operator Computing Environment</p>
       </div>
     </div>
     
@@ -231,6 +234,7 @@ export default function App() {
   const [files, setFiles] = useState<FileIntegrity[]>([]);
   const [loading, setLoading] = useState(true);
   const [dismissedPids, setDismissedPids] = useState<Set<number>>(new Set());
+  const [processView, setProcessView] = useState<'table' | 'tree'>('table');
 
   // AI State
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -590,6 +594,28 @@ export default function App() {
                     <p className="text-[10px] text-zinc-500 uppercase">Real-time behavioral tracking of all system processes</p>
                   </div>
                   <div className="flex items-center gap-3">
+                    <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-sm p-1">
+                      <button 
+                        onClick={() => setProcessView('table')}
+                        className={cn(
+                          "p-1.5 rounded-sm transition-all",
+                          processView === 'table' ? "bg-zinc-800 text-[#00FF41]" : "text-zinc-500 hover:text-zinc-300"
+                        )}
+                        title="Table View"
+                      >
+                        <LayoutList className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => setProcessView('tree')}
+                        className={cn(
+                          "p-1.5 rounded-sm transition-all",
+                          processView === 'tree' ? "bg-zinc-800 text-[#00FF41]" : "text-zinc-500 hover:text-zinc-300"
+                        )}
+                        title="Tree View"
+                      >
+                        <GitGraph className="w-4 h-4" />
+                      </button>
+                    </div>
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-sm">
                       <Search className="w-4 h-4 text-zinc-500" />
                       <input type="text" placeholder="SEARCH PID/NAME..." className="bg-transparent text-xs focus:outline-none w-48" />
@@ -600,70 +626,76 @@ export default function App() {
                   </div>
                 </div>
                 
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="text-zinc-500 border-b border-[#2A2A2E] bg-zinc-900/20">
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">PID</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">NAME</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">USER</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">CPU %</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">MEMORY</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">STATUS</th>
-                      <th className="px-6 py-4 font-bold uppercase tracking-wider">ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#2A2A2E]">
-                    {processes.map((proc) => (
-                      <tr key={proc.id} className="hover:bg-zinc-800/30 transition-colors group">
-                        <td className="px-6 py-4 font-mono text-zinc-400">{proc.pid}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-col">
-                            <span className="font-bold text-zinc-200">{proc.name}</span>
-                            <span className="text-[10px] text-zinc-600 font-mono truncate max-w-[200px]">{proc.path}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-zinc-400">{proc.user}</td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-12 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                              <div className="h-full bg-blue-500" style={{ width: `${proc.cpu * 10}%` }} />
-                            </div>
-                            <span className="text-[10px] text-zinc-500">{proc.cpu}%</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-zinc-400">{proc.memory}MB</td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <div className={cn(
-                              "w-1.5 h-1.5 rounded-full",
-                              proc.status === 'recognized' ? 'bg-emerald-500' : 
-                              proc.status === 'unknown' ? 'bg-yellow-500' : 'bg-red-500 animate-pulse'
-                            )} />
-                            <span className={cn(
-                              "text-[10px] font-bold uppercase tracking-widest",
-                              proc.status === 'recognized' ? 'text-emerald-500' : 
-                              proc.status === 'unknown' ? 'text-yellow-500' : 'text-red-500'
-                            )}>{proc.status}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button className="p-1.5 hover:bg-zinc-700 rounded-sm text-zinc-400 hover:text-white" title="Inspect">
-                              <Info className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => killProcess(proc.pid)}
-                              className="p-1.5 hover:bg-red-900/30 rounded-sm text-zinc-400 hover:text-red-500" 
-                              title="Kill Process"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
+                {processView === 'table' ? (
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="text-zinc-500 border-b border-[#2A2A2E] bg-zinc-900/20">
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">PID</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">NAME</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">USER</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">CPU %</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">MEMORY</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">STATUS</th>
+                        <th className="px-6 py-4 font-bold uppercase tracking-wider">ACTIONS</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-[#2A2A2E]">
+                      {processes.map((proc) => (
+                        <tr key={proc.id} className="hover:bg-zinc-800/30 transition-colors group">
+                          <td className="px-6 py-4 font-mono text-zinc-400">{proc.pid}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex flex-col">
+                              <span className="font-bold text-zinc-200">{proc.name}</span>
+                              <span className="text-[10px] text-zinc-600 font-mono truncate max-w-[200px]">{proc.path}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-zinc-400">{proc.user}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-12 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                                <div className="h-full bg-blue-500" style={{ width: `${proc.cpu * 10}%` }} />
+                              </div>
+                              <span className="text-[10px] text-zinc-500">{proc.cpu}%</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-zinc-400">{proc.memory}MB</td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className={cn(
+                                "w-1.5 h-1.5 rounded-full",
+                                proc.status === 'recognized' ? 'bg-emerald-500' : 
+                                proc.status === 'unknown' ? 'bg-yellow-500' : 'bg-red-500 animate-pulse'
+                              )} />
+                              <span className={cn(
+                                "text-[10px] font-bold uppercase tracking-widest",
+                                proc.status === 'recognized' ? 'text-emerald-500' : 
+                                proc.status === 'unknown' ? 'text-yellow-500' : 'text-red-500'
+                              )}>{proc.status}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button className="p-1.5 hover:bg-zinc-700 rounded-sm text-zinc-400 hover:text-white" title="Inspect">
+                                <Info className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => killProcess(proc.pid)}
+                                className="p-1.5 hover:bg-red-900/30 rounded-sm text-zinc-400 hover:text-red-500" 
+                                title="Kill Process"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div className="p-6">
+                    <ProcessTree processes={processes} />
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -804,14 +836,14 @@ export default function App() {
               >
                 <div className="flex items-center gap-2 mb-4 text-zinc-500 border-b border-zinc-800 pb-2">
                   <Terminal className="w-4 h-4" />
-                  <span className="text-[10px] font-bold tracking-widest uppercase">KALI_SENTRY_SHELL v1.0</span>
+                  <span className="text-[10px] font-bold tracking-widest uppercase">OMC_SHELL v1.0</span>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-2 mb-4 custom-scrollbar">
-                  <p className="text-zinc-500 italic"># Kali Sentry Security Shell initialized.</p>
+                  <p className="text-zinc-500 italic"># One Man Computer Security Shell initialized.</p>
                   <p className="text-zinc-500 italic"># Type 'help' for available commands.</p>
                   <div className="flex gap-2">
-                    <span className="text-[#00FF41]">kali@sentry:~$</span>
-                    <span className="text-white">sentry --status</span>
+                    <span className="text-[#00FF41]">omc@operator:~$</span>
+                    <span className="text-white">omc --status</span>
                   </div>
                   <div className="pl-4 space-y-1 text-zinc-400">
                     <p>[+] Behavioral engine: ACTIVE</p>
@@ -820,12 +852,12 @@ export default function App() {
                     <p>[+] Privilege guard: ENABLED</p>
                   </div>
                   <div className="flex gap-2">
-                    <span className="text-[#00FF41]">kali@sentry:~$</span>
+                    <span className="text-[#00FF41]">omc@operator:~$</span>
                     <span className="animate-pulse">_</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[#00FF41]">kali@sentry:~$</span>
+                  <span className="text-[#00FF41]">omc@operator:~$</span>
                   <input 
                     type="text" 
                     className="flex-1 bg-transparent border-none focus:ring-0 p-0 text-white outline-none"

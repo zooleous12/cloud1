@@ -15,7 +15,7 @@ async function startServer() {
   let authorizedPorts: Set<number> = new Set([22, 80, 443, 3000]);
   let suspiciousPorts: Set<number> = new Set([4444, 6667, 1337, 31337]);
   
-  // System whitelist for common Kali/Linux services
+  // System whitelist for common Linux services
   const systemWhitelist = [
     'rtkit-daemon',
     'systemd',
@@ -163,7 +163,7 @@ async function startServer() {
 
   // API: Get Network Connections
   app.get('/api/network', (req, res) => {
-    // ss -tulpn is ideal for Kali, but netstat is more universal
+    // ss -tulpn is ideal for Linux, but netstat is more universal
     const output = runCommand('netstat -tulpn 2>/dev/null || netstat -an');
     const lines = output.trim().split('\n');
     
@@ -303,7 +303,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Sentry Backend active on port ${PORT}`);
+    console.log(`OMC Backend active on port ${PORT}`);
   });
 }
 

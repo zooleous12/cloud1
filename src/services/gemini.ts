@@ -4,16 +4,16 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 export async function analyzeSystemState(state: any) {
   const model = "gemini-3-flash-preview";
-  const prompt = `As a Kali Linux security expert, analyze the following system state and identify potential threats or anomalies.
+  const prompt = `As a systems operations expert for a One Man Computer (OMC) environment, analyze the following system state and identify potential threats, performance bottlenecks, or anomalies.
   
-  IMPORTANT KNOWLEDGE: Standard system processes like 'rtkit-daemon', 'systemd', 'dbus-daemon', and 'gnome-shell' are expected on a healthy Kali installation. Flag them only if their resource usage (CPU/MEM) is abnormally high or if they are running from unusual paths.
+  IMPORTANT KNOWLEDGE: Standard system processes like 'rtkit-daemon', 'systemd', 'dbus-daemon', and 'gnome-shell' are expected on a healthy Linux installation. Flag them only if their resource usage (CPU/MEM) is abnormally high or if they are running from unusual paths.
   
   Processes: ${JSON.stringify(state.processes)}
   Connections: ${JSON.stringify(state.connections)}
   File Integrity: ${JSON.stringify(state.files)}
   Recent Events: ${JSON.stringify(state.events)}
   
-  Provide a concise summary of the security posture and specific recommendations.`;
+  Provide a concise summary of the system's health, security posture, and specific recommendations for a single-operator setup.`;
 
   const response = await ai.models.generateContent({
     model,

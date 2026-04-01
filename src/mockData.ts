@@ -1,11 +1,13 @@
 import { Process, NetworkConnection, SystemEvent, FileIntegrity } from './types';
 
 export const MOCK_PROCESSES: Process[] = [
-  { id: '1', name: 'systemd', pid: 1, user: 'root', cpu: 0.1, memory: 12, startTime: '2026-03-17 00:00:01', status: 'recognized', path: '/sbin/init' },
-  { id: '2', name: 'Xorg', pid: 842, user: 'root', cpu: 1.2, memory: 156, startTime: '2026-03-17 00:05:12', status: 'recognized', path: '/usr/lib/xorg/Xorg' },
-  { id: '3', name: 'gnome-shell', pid: 1204, user: 'kali', cpu: 2.5, memory: 412, startTime: '2026-03-17 00:05:15', status: 'recognized', path: '/usr/bin/gnome-shell' },
-  { id: '4', name: 'msfconsole', pid: 4521, user: 'kali', cpu: 0.5, memory: 89, startTime: '2026-03-17 02:10:00', status: 'recognized', path: '/usr/bin/msfconsole' },
-  { id: '5', name: 'nc', pid: 9982, user: 'kali', cpu: 0.1, memory: 4, startTime: '2026-03-17 02:15:30', status: 'unknown', path: '/usr/bin/nc' },
+  { id: '1', name: 'systemd', pid: 1, ppid: 0, user: 'root', cpu: 0.1, memory: 12, startTime: '2026-03-17 00:00:01', status: 'recognized', path: '/sbin/init' },
+  { id: '2', name: 'Xorg', pid: 842, ppid: 1, user: 'root', cpu: 1.2, memory: 156, startTime: '2026-03-17 00:05:12', status: 'recognized', path: '/usr/lib/xorg/Xorg' },
+  { id: '3', name: 'gnome-shell', pid: 1204, ppid: 842, user: 'kali', cpu: 2.5, memory: 412, startTime: '2026-03-17 00:05:15', status: 'recognized', path: '/usr/bin/gnome-shell' },
+  { id: '4', name: 'msfconsole', pid: 4521, ppid: 1204, user: 'kali', cpu: 0.5, memory: 89, startTime: '2026-03-17 02:10:00', status: 'recognized', path: '/usr/bin/msfconsole' },
+  { id: '5', name: 'nc', pid: 9982, ppid: 4521, user: 'kali', cpu: 0.1, memory: 4, startTime: '2026-03-17 02:15:30', status: 'unknown', path: '/usr/bin/nc' },
+  { id: '6', name: 'bash', pid: 1205, ppid: 1204, user: 'kali', cpu: 0.1, memory: 8, startTime: '2026-03-17 00:05:20', status: 'recognized', path: '/usr/bin/bash' },
+  { id: '7', name: 'sshd', pid: 750, ppid: 1, user: 'root', cpu: 0.1, memory: 15, startTime: '2026-03-17 00:02:00', status: 'recognized', path: '/usr/sbin/sshd' },
 ];
 
 export const MOCK_CONNECTIONS: NetworkConnection[] = [

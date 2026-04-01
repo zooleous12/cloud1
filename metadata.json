@@ -1,5 +1,5 @@
 {
-  "name": "Kali Sentry",
-  "description": "A local-first security monitoring dashboard for Kali Linux featuring behavioral analysis, network port auditing, and process integrity tracking.",
-  "requestFramePermissions": []
+  "name": "Context Forge",
+  "description": "A cinematic, high-performance AI context orchestration platform featuring advanced neural bridging, steganographic vaults, and multi-modal intelligence.",
+  "requestFramePermissions": ["camera", "microphone"]
 }

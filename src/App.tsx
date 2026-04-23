@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Component, ReactNode, ErrorInfo } from 'react';
 import { 
   Shield, 
   Activity, 
@@ -23,7 +23,12 @@ import {
   Sparkles,
   Loader2,
   GitGraph,
-  LayoutList
+  LayoutList,
+  MessageSquare,
+  LogOut,
+  Send,
+  Zap,
+  Maximize2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -41,7 +46,131 @@ import { cn } from './lib/utils';
 import { MOCK_PROCESSES, MOCK_CONNECTIONS, MOCK_EVENTS, MOCK_FILES } from './mockData';
 import { Process, NetworkConnection, SystemEvent, FileIntegrity, Severity } from './types';
 import { ProcessTree } from './components/ProcessTree';
-import { analyzeSystemState, analyzeForensicMedia, generateThreatVisual } from './services/gemini';
+import { 
+  analyzeSystemState, 
+  generateChatResponse, 
+  analyzeMedia, 
+  generateHighQualityImage, 
+  editOrCreateImage 
+} from './services/gemini';
+import { auth, db, signInWithGoogle, logout } from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  public props: ErrorBoundaryProps;
+  public state: ErrorBoundaryState = {
+    hasError: false,
+    error: null
+  };
+
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.props = props;
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "An unexpected error occurred.";
+      try {
+        const parsed = JSON.parse(this.state.error?.message || "");
+        if (parsed.error) errorMessage = `Firestore Error: ${parsed.error} (${parsed.operationType} on ${parsed.path})`;
+      } catch (e) {
+        errorMessage = this.state.error?.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen bg-[#050505] flex items-center justify-center p-6 relative overflow-hidden">
+          <div className="crt-overlay" />
+          <div className="scanline" />
+          <div className="glass-panel p-8 max-w-md w-full border-red-500/30 text-center relative z-10">
+            <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-white mb-2 uppercase tracking-widest">System Failure</h2>
+            <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+              {errorMessage}
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold tracking-widest transition-colors rounded-sm"
+            >
+              REBOOT SYSTEM
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // --- Components ---
 
@@ -59,34 +188,43 @@ const StatusBadge = ({ severity }: { severity: Severity }) => {
   );
 };
 
-const Header = () => (
-  <header className="h-16 border-b border-[#2A2A2E] bg-[#0D0D0F] flex items-center justify-between px-6 sticky top-0 z-50">
+const Header = ({ user }: { user: User | null }) => (
+  <header className="h-16 border-b border-[#1A1A1C] bg-[#0D0D0F] flex items-center justify-between px-6 sticky top-0 z-50">
     <div className="flex items-center gap-3">
-      <div className="w-10 h-10 bg-[#00FF41]/10 rounded-sm flex items-center justify-center border border-[#00FF41]/20">
-        <Shield className="w-6 h-6 text-[#00FF41]" />
+      <div className="w-10 h-10 bg-[#C5A059]/10 rounded-sm flex items-center justify-center border border-[#C5A059]/20">
+        <Shield className="w-6 h-6 text-[#C5A059]" />
       </div>
       <div>
-        <h1 className="text-lg font-bold tracking-tighter terminal-text uppercase">One Man Computer v1.0.0</h1>
-        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">Single Operator Computing Environment</p>
+        <h1 className="text-lg font-bold tracking-tighter terminal-text uppercase">Context Forge v2.0.0</h1>
+        <p className="text-[10px] text-zinc-500 uppercase tracking-[0.2em]">Neural Context Orchestration Platform</p>
       </div>
     </div>
     
     <div className="flex items-center gap-6">
       <div className="flex items-center gap-4 text-[10px] text-zinc-400">
         <div className="flex items-center gap-2">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#00FF41] animate-pulse" />
-          <span>SYSTEM: ONLINE</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-[#C5A059] animate-pulse" />
+          <span>NEURAL: ACTIVE</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#00FF41]" />
-          <span>NETWORK: SECURE</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-[#C5A059]" />
+          <span>VAULT: SECURE</span>
         </div>
       </div>
       <div className="h-8 w-px bg-zinc-800" />
       <div className="flex items-center gap-3">
+        {user && (
+          <div className="flex items-center gap-3 mr-2">
+            <img src={user.photoURL || ''} alt="" className="w-8 h-8 rounded-full border border-[#C5A059]/30" />
+            <div className="hidden md:block text-right">
+              <p className="text-[10px] font-bold text-zinc-200 uppercase">{user.displayName}</p>
+              <button onClick={logout} className="text-[9px] text-[#C5A059] hover:underline uppercase tracking-widest">Disconnect</button>
+            </div>
+          </div>
+        )}
         <button className="p-2 hover:bg-zinc-800 rounded-sm transition-colors relative">
           <Bell className="w-5 h-5 text-zinc-400" />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-[#0D0D0F]" />
+          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#C5A059] rounded-full border-2 border-[#0D0D0F]" />
         </button>
         <button className="p-2 hover:bg-zinc-800 rounded-sm transition-colors">
           <Settings className="w-5 h-5 text-zinc-400" />
@@ -96,18 +234,19 @@ const Header = () => (
   </header>
 );
 
-const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab: (t: string) => void }) => {
+const Sidebar = ({ activeTab, setActiveTab, user }: { activeTab: string, setActiveTab: (t: string) => void, user: User | null }) => {
   const menuItems = [
     { id: 'overview', icon: Activity, label: 'OVERVIEW' },
     { id: 'processes', icon: Cpu, label: 'PROCESSES' },
     { id: 'network', icon: Network, label: 'NETWORK' },
     { id: 'files', icon: FileWarning, label: 'INTEGRITY' },
+    { id: 'chat', icon: MessageSquare, label: 'NEURAL CHAT' },
     { id: 'forensics', icon: BrainCircuit, label: 'AI FORENSICS' },
     { id: 'terminal', icon: Terminal, label: 'TERMINAL' },
   ];
 
   return (
-    <aside className="w-64 border-r border-[#2A2A2E] bg-[#0D0D0F] flex flex-col">
+    <aside className="w-64 border-r border-[#1A1A1C] bg-[#0D0D0F] flex flex-col">
       <nav className="flex-1 p-4 space-y-1">
         {menuItems.map((item) => (
           <button
@@ -116,31 +255,31 @@ const Sidebar = ({ activeTab, setActiveTab }: { activeTab: string, setActiveTab:
             className={cn(
               "w-full flex items-center gap-3 px-4 py-3 text-xs font-bold tracking-widest transition-all duration-200 group",
               activeTab === item.id 
-                ? "bg-[#00FF41]/10 text-[#00FF41] border-l-2 border-[#00FF41]" 
+                ? "bg-[#C5A059]/10 text-[#C5A059] border-l-2 border-[#C5A059]" 
                 : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50"
             )}
           >
-            <item.icon className={cn("w-4 h-4", activeTab === item.id ? "text-[#00FF41]" : "text-zinc-500 group-hover:text-zinc-300")} />
+            <item.icon className={cn("w-4 h-4", activeTab === item.id ? "text-[#C5A059]" : "text-zinc-500 group-hover:text-zinc-300")} />
             {item.label}
           </button>
         ))}
       </nav>
       
-      <div className="p-6 border-t border-[#2A2A2E]">
+      <div className="p-6 border-t border-[#1A1A1C]">
         <div className="glass-panel p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-zinc-500">CPU USAGE</span>
-            <span className="text-[10px] text-[#00FF41]">12%</span>
+            <span className="text-[10px] text-zinc-500 uppercase">Neural Load</span>
+            <span className="text-[10px] text-[#C5A059]">24%</span>
           </div>
           <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-            <div className="h-full bg-[#00FF41] w-[12%]" />
+            <div className="h-full bg-[#C5A059] w-[24%]" />
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-zinc-500">MEM USAGE</span>
-            <span className="text-[10px] text-[#00FF41]">4.2GB</span>
+            <span className="text-[10px] text-zinc-500 uppercase">Context Depth</span>
+            <span className="text-[10px] text-[#C5A059]">8.4K</span>
           </div>
           <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-            <div className="h-full bg-[#00FF41] w-[45%]" />
+            <div className="h-full bg-[#C5A059] w-[65%]" />
           </div>
         </div>
       </div>
@@ -225,6 +364,8 @@ const AlertModal = ({ isOpen, onClose, event, onAcknowledge, onKill }: {
 };
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [isAlertOpen, setIsAlertOpen] = useState(false);
   const [currentAlert, setCurrentAlert] = useState<SystemEvent | null>(null);
@@ -244,6 +385,44 @@ export default function App() {
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [imagePrompt, setImagePrompt] = useState('');
+  const [imageSize, setImageSize] = useState<'1K' | '2K' | '4K'>('1K');
+
+  // Chat State
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'model', content: string }[]>([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [useThinking, setUseThinking] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Fetch chat history from Firestore
+    const q = query(
+      collection(db, 'chat_messages'),
+      where('userId', '==', user.uid),
+      orderBy('timestamp', 'asc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const messages = snapshot.docs.map(doc => ({
+        role: doc.data().role as 'user' | 'model',
+        content: doc.data().text || doc.data().content
+      }));
+      setChatHistory(messages);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'chat_messages');
+    });
+
+    return () => unsubscribe();
+  }, [user]);
 
   const fetchData = async () => {
     try {
@@ -296,13 +475,44 @@ export default function App() {
     }
   };
 
+  const handleChatSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !user) return;
+
+    const userMessage = chatInput;
+    setChatInput('');
+    setIsChatLoading(true);
+
+    try {
+      // Save user message to Firestore
+      await addDoc(collection(db, 'chat_messages'), {
+        userId: user.uid,
+        role: 'user',
+        content: userMessage,
+        timestamp: serverTimestamp()
+      });
+
+      const messages = [...chatHistory, { role: 'user', content: userMessage }];
+      const response = await generateChatResponse(messages, 'general', useThinking);
+      
+      setChatHistory(prev => [...prev, { role: 'user', content: userMessage }, { role: 'model', content: response }]);
+    } catch (error) {
+      console.error('Chat failed:', error);
+      if (error instanceof Error && error.message.includes('permission-denied')) {
+        handleFirestoreError(error, OperationType.WRITE, 'chat_messages');
+      }
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
   const handleForensicUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video') => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsForensicLoading(true);
     try {
-      const result = await analyzeForensicMedia(file, type);
+      const result = await analyzeMedia(file, type, `Analyze this ${type} for security threats, anomalies, or hidden data. Provide a detailed forensic report.`);
       setForensicResult(result);
     } catch (error) {
       console.error('Forensic analysis failed:', error);
@@ -315,7 +525,7 @@ export default function App() {
     setIsGenerating(true);
     try {
       const prompt = imagePrompt || "A malicious process spreading through a network grid";
-      const img = await generateThreatVisual(prompt);
+      const img = await generateHighQualityImage(prompt, imageSize);
       setGeneratedImage(img);
     } catch (error) {
       console.error('Image generation failed:', error);
@@ -373,15 +583,67 @@ export default function App() {
     }));
   }, []);
 
+  if (isAuthLoading) {
+    return (
+      <div className="h-screen bg-[#050505] flex items-center justify-center">
+        <Loader2 className="w-12 h-12 animate-spin text-[#C5A059]" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="h-screen bg-[#050505] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+        <div className="crt-overlay" />
+        <div className="scanline" />
+        
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md glass-panel p-8 text-center space-y-8 relative z-10"
+        >
+          <div className="flex justify-center">
+            <div className="w-20 h-20 bg-[#C5A059]/10 rounded-sm flex items-center justify-center border border-[#C5A059]/20">
+              <Shield className="w-12 h-12 text-[#C5A059]" />
+            </div>
+          </div>
+          
+          <div>
+            <h1 className="text-2xl font-bold tracking-tighter terminal-text uppercase mb-2">Context Forge</h1>
+            <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Neural Context Orchestration Platform</p>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Access restricted to authorized operators. Neural bridging requires biometric synchronization.
+            </p>
+            <button 
+              onClick={signInWithGoogle}
+              className="w-full py-4 bg-[#C5A059] hover:bg-[#D4AF37] text-black text-xs font-bold tracking-[0.2em] transition-all rounded-sm flex items-center justify-center gap-3"
+            >
+              <UserCheck className="w-4 h-4" />
+              INITIALIZE NEURAL LINK
+            </button>
+          </div>
+
+          <div className="pt-4 border-t border-zinc-800/50">
+            <p className="text-[9px] text-zinc-600 uppercase tracking-widest">Secure Protocol v2.0.4 // encrypted_session_active</p>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <ErrorBoundary>
+      <div className="flex flex-col h-screen overflow-hidden">
       <div className="crt-overlay" />
-      <Header />
+      <Header user={user} />
       
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} user={user} />
         
-        <main className="flex-1 overflow-y-auto p-6 bg-[#0A0A0B] relative">
+        <main className="flex-1 overflow-y-auto p-6 bg-[#050505] relative">
           <div className="scanline" />
           
           <AnimatePresence mode="wait">
@@ -395,22 +657,22 @@ export default function App() {
               >
                 {/* Stats Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {[
-                    { label: 'ACTIVE PROCESSES', value: processes.length, icon: Cpu, color: 'text-blue-400' },
-                    { label: 'NETWORK CONNS', value: MOCK_CONNECTIONS.length, icon: Network, color: 'text-emerald-400' },
-                    { label: 'THREATS BLOCKED', value: '14', icon: Shield, color: 'text-[#00FF41]' },
-                    { label: 'SYSTEM INTEGRITY', value: '98%', icon: Lock, color: 'text-orange-400' },
-                  ].map((stat, i) => (
-                    <div key={i} className="glass-panel p-4 flex items-center gap-4">
-                      <div className={cn("p-3 bg-zinc-900 rounded-sm border border-zinc-800", stat.color)}>
-                        <stat.icon className="w-5 h-5" />
+                    {[
+                      { label: 'ACTIVE PROCESSES', value: processes.length, icon: Cpu, color: 'text-blue-400' },
+                      { label: 'NETWORK CONNS', value: MOCK_CONNECTIONS.length, icon: Network, color: 'text-emerald-400' },
+                      { label: 'THREATS BLOCKED', value: '14', icon: Shield, color: 'text-[#C5A059]' },
+                      { label: 'SYSTEM INTEGRITY', value: '98%', icon: Lock, color: 'text-orange-400' },
+                    ].map((stat, i) => (
+                      <div key={i} className="glass-panel p-4 flex items-center gap-4">
+                        <div className={cn("p-3 bg-zinc-900 rounded-sm border border-zinc-800", stat.color)}>
+                          <stat.icon className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-zinc-500 font-bold tracking-widest">{stat.label}</p>
+                          <p className="text-xl font-bold terminal-text">{stat.value}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-zinc-500 font-bold tracking-widest">{stat.label}</p>
-                        <p className="text-xl font-bold terminal-text">{stat.value}</p>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
 
                 {/* Charts Section */}
@@ -418,12 +680,12 @@ export default function App() {
                   <div className="lg:col-span-2 glass-panel p-6">
                     <div className="flex items-center justify-between mb-6">
                       <h3 className="text-xs font-bold tracking-widest flex items-center gap-2">
-                        <Activity className="w-4 h-4 text-[#00FF41]" />
+                        <Activity className="w-4 h-4 text-[#C5A059]" />
                         NETWORK TRAFFIC (PPS)
                       </h3>
                       <div className="flex items-center gap-4 text-[10px]">
                         <div className="flex items-center gap-1.5">
-                          <div className="w-2 h-2 rounded-full bg-[#00FF41]" />
+                          <div className="w-2 h-2 rounded-full bg-[#C5A059]" />
                           <span className="text-zinc-500">INBOUND</span>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -437,18 +699,18 @@ export default function App() {
                         <AreaChart data={chartData}>
                           <defs>
                             <linearGradient id="colorPackets" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#00FF41" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#00FF41" stopOpacity={0}/>
+                              <stop offset="5%" stopColor="#C5A059" stopOpacity={0.3}/>
+                              <stop offset="95%" stopColor="#C5A059" stopOpacity={0}/>
                             </linearGradient>
                           </defs>
                           <CartesianGrid strokeDasharray="3 3" stroke="#1A1A1E" vertical={false} />
                           <XAxis dataKey="time" hide />
                           <YAxis stroke="#4A4A4E" fontSize={10} tickLine={false} axisLine={false} />
                           <Tooltip 
-                            contentStyle={{ backgroundColor: '#121214', border: '1px solid #2A2A2E', fontSize: '10px' }}
-                            itemStyle={{ color: '#00FF41' }}
+                            contentStyle={{ backgroundColor: '#121214', border: '1px solid #1A1A1C', fontSize: '10px' }}
+                            itemStyle={{ color: '#C5A059' }}
                           />
-                          <Area type="monotone" dataKey="packets" stroke="#00FF41" fillOpacity={1} fill="url(#colorPackets)" />
+                          <Area type="monotone" dataKey="packets" stroke="#C5A059" fillOpacity={1} fill="url(#colorPackets)" />
                         </AreaChart>
                       </ResponsiveContainer>
                     </div>
@@ -481,7 +743,7 @@ export default function App() {
                         <p className="text-[10px] text-zinc-600 italic">No security events logged.</p>
                       )}
                     </div>
-                    <button className="mt-4 w-full py-2 text-[10px] font-bold text-zinc-500 hover:text-[#00FF41] border border-zinc-800 hover:border-[#00FF41]/30 transition-all uppercase tracking-widest">
+                    <button className="mt-4 w-full py-2 text-[10px] font-bold text-zinc-500 hover:text-[#C5A059] border border-zinc-800 hover:border-[#C5A059]/30 transition-all uppercase tracking-widest">
                       View Audit Log
                     </button>
                   </div>
@@ -502,13 +764,13 @@ export default function App() {
                     <div className="p-0">
                       <table className="w-full text-left text-[11px]">
                         <thead>
-                          <tr className="text-zinc-500 border-b border-[#2A2A2E]">
+                          <tr className="text-zinc-500 border-b border-[#1A1A1C]">
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">PATH</th>
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">STATUS</th>
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">LAST CHECK</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-[#2A2A2E]">
+                        <tbody className="divide-y divide-[#1A1A1C]">
                           {files.map((file, i) => (
                             <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
                               <td className="px-4 py-3 font-mono text-zinc-300 truncate max-w-[150px]" title={file.path}>{file.path}</td>
@@ -533,7 +795,7 @@ export default function App() {
                   </div>
 
                   <div className="glass-panel overflow-hidden">
-                    <div className="p-4 border-b border-[#2A2A2E] bg-zinc-900/30 flex items-center justify-between">
+                    <div className="p-4 border-b border-[#1A1A1C] bg-zinc-900/30 flex items-center justify-between">
                       <h3 className="text-xs font-bold tracking-widest flex items-center gap-2">
                         <Network className="w-4 h-4 text-emerald-400" />
                         ACTIVE CONNECTIONS
@@ -543,21 +805,21 @@ export default function App() {
                         <input 
                           type="text" 
                           placeholder="FILTER..." 
-                          className="bg-zinc-900 border border-zinc-800 rounded-sm pl-7 pr-2 py-1 text-[10px] focus:outline-none focus:border-[#00FF41]/50 w-32"
+                          className="bg-zinc-900 border border-zinc-800 rounded-sm pl-7 pr-2 py-1 text-[10px] focus:outline-none focus:border-[#C5A059]/50 w-32"
                         />
                       </div>
                     </div>
                     <div className="p-0">
                       <table className="w-full text-left text-[11px]">
                         <thead>
-                          <tr className="text-zinc-500 border-b border-[#2A2A2E]">
+                          <tr className="text-zinc-500 border-b border-[#1A1A1C]">
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">REMOTE ADDR</th>
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">PORT</th>
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">PROCESS</th>
                             <th className="px-4 py-3 font-medium uppercase tracking-wider">AUTH</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-[#2A2A2E]">
+                        <tbody className="divide-y divide-[#1A1A1C]">
                           {connections.map((conn, i) => (
                             <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
                               <td className="px-4 py-3 font-mono text-zinc-300">{conn.remoteAddress}</td>
@@ -699,6 +961,106 @@ export default function App() {
               </motion.div>
             )}
 
+            {activeTab === 'chat' && (
+              <motion.div 
+                key="chat"
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="h-full flex flex-col glass-panel overflow-hidden"
+              >
+                <div className="p-6 border-b border-[#1A1A1C] flex items-center justify-between bg-zinc-900/20">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-[#C5A059]/10 rounded-sm border border-[#C5A059]/20">
+                      <MessageSquare className="w-5 h-5 text-[#C5A059]" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold tracking-widest uppercase">Neural Chat Interface</h2>
+                      <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Multi-turn Context Orchestration</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button 
+                      onClick={() => setUseThinking(!useThinking)}
+                      className={cn(
+                        "flex items-center gap-2 px-3 py-1.5 rounded-sm border text-[10px] font-bold transition-all",
+                        useThinking 
+                          ? "bg-[#C5A059]/20 border-[#C5A059] text-[#C5A059]" 
+                          : "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300"
+                      )}
+                    >
+                      <Zap className={cn("w-3.5 h-3.5", useThinking && "fill-[#C5A059]")} />
+                      HIGH-THINKING MODE
+                    </button>
+                    <button 
+                      onClick={() => setChatHistory([])}
+                      className="text-[10px] text-zinc-500 hover:text-white uppercase tracking-widest"
+                    >
+                      Clear Session
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-black/20">
+                  {chatHistory.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-30">
+                      <BrainCircuit className="w-16 h-16 text-[#C5A059]" />
+                      <div className="max-w-xs">
+                        <p className="text-xs font-bold uppercase tracking-widest mb-2">Neural Link Ready</p>
+                        <p className="text-[10px] leading-relaxed uppercase">Initialize conversation to begin context orchestration. System persona: Context Forge AI.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    chatHistory.map((msg, i) => (
+                      <div key={i} className={cn("flex flex-col", msg.role === 'user' ? "items-end" : "items-start")}>
+                        <div className={cn(
+                          "max-w-[80%] p-4 rounded-sm text-xs leading-relaxed",
+                          msg.role === 'user' 
+                            ? "bg-[#C5A059]/10 border border-[#C5A059]/20 text-zinc-200" 
+                            : "bg-zinc-900/80 border border-zinc-800 text-zinc-300"
+                        )}>
+                          <div className="flex items-center gap-2 mb-2 opacity-50">
+                            {msg.role === 'user' ? <UserCheck className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
+                            <span className="text-[9px] font-bold uppercase tracking-widest">{msg.role === 'user' ? 'Operator' : 'Context Forge AI'}</span>
+                          </div>
+                          <div className="whitespace-pre-wrap">{msg.content}</div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  {isChatLoading && (
+                    <div className="flex flex-col items-start">
+                      <div className="bg-zinc-900/80 border border-zinc-800 p-4 rounded-sm">
+                        <div className="flex items-center gap-2 text-[#C5A059] animate-pulse">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span className="text-[10px] font-bold uppercase tracking-widest">Processing Neural Context...</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <form onSubmit={handleChatSubmit} className="p-6 border-t border-[#1A1A1C] bg-zinc-900/20">
+                  <div className="relative">
+                    <input 
+                      type="text" 
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      placeholder="Enter command or query..."
+                      className="w-full bg-black/40 border border-zinc-800 rounded-sm pl-4 pr-12 py-4 text-xs text-zinc-200 focus:border-[#C5A059]/50 outline-none transition-all"
+                    />
+                    <button 
+                      type="submit"
+                      disabled={isChatLoading || !chatInput.trim()}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-[#C5A059] hover:bg-[#C5A059]/10 rounded-sm transition-all disabled:opacity-30"
+                    >
+                      <Send className="w-5 h-5" />
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            )}
+
             {activeTab === 'forensics' && (
               <motion.div 
                 key="forensics"
@@ -712,13 +1074,13 @@ export default function App() {
                   <div className="glass-panel p-6 flex flex-col">
                     <div className="flex items-center justify-between mb-6">
                       <h3 className="text-sm font-bold tracking-widest flex items-center gap-2">
-                        <BrainCircuit className="w-5 h-5 text-[#00FF41]" />
+                        <BrainCircuit className="w-5 h-5 text-[#C5A059]" />
                         AI SECURITY CONSULTANT
                       </h3>
                       <button 
                         onClick={handleAiConsult}
                         disabled={isAnalyzing}
-                        className="px-4 py-1.5 bg-[#00FF41]/10 border border-[#00FF41]/30 text-[#00FF41] text-[10px] font-bold tracking-widest rounded-sm hover:bg-[#00FF41]/20 transition-all disabled:opacity-50"
+                        className="px-4 py-1.5 bg-[#C5A059]/10 border border-[#C5A059]/30 text-[#C5A059] text-[10px] font-bold tracking-widest rounded-sm hover:bg-[#C5A059]/20 transition-all disabled:opacity-50"
                       >
                         {isAnalyzing ? 'ANALYZING...' : 'RUN SYSTEM AUDIT'}
                       </button>
@@ -727,8 +1089,8 @@ export default function App() {
                     <div className="flex-1 bg-black/40 border border-zinc-800 rounded-sm p-4 font-mono text-xs overflow-y-auto custom-scrollbar min-h-[300px]">
                       {isAnalyzing ? (
                         <div className="flex flex-col items-center justify-center h-full gap-4 text-zinc-500">
-                          <Loader2 className="w-8 h-8 animate-spin text-[#00FF41]" />
-                          <p className="animate-pulse">CONSULTING GEMINI INTELLIGENCE...</p>
+                          <Loader2 className="w-8 h-8 animate-spin text-[#C5A059]" />
+                          <p className="animate-pulse uppercase tracking-widest">Consulting Neural Core...</p>
                         </div>
                       ) : aiAnalysis ? (
                         <div className="space-y-4 text-zinc-300 whitespace-pre-wrap">
@@ -737,7 +1099,7 @@ export default function App() {
                       ) : (
                         <div className="flex flex-col items-center justify-center h-full text-zinc-600 text-center px-8">
                           <Sparkles className="w-12 h-12 mb-4 opacity-20" />
-                          <p>Click "RUN SYSTEM AUDIT" to have Gemini analyze your current system state for vulnerabilities.</p>
+                          <p className="uppercase tracking-widest text-[10px]">Initialize system audit to analyze current neural state.</p>
                         </div>
                       )}
                     </div>
@@ -747,7 +1109,7 @@ export default function App() {
                   <div className="glass-panel p-6 flex flex-col">
                     <h3 className="text-sm font-bold tracking-widest flex items-center gap-2 mb-6">
                       <Camera className="w-5 h-5 text-blue-400" />
-                      MEDIA FORENSICS (PRO)
+                      NEURAL MEDIA FORENSICS
                     </h3>
                     
                     <div className="grid grid-cols-2 gap-4 mb-6">
@@ -767,14 +1129,14 @@ export default function App() {
                       {isForensicLoading ? (
                         <div className="flex flex-col items-center justify-center h-full gap-4 text-zinc-500">
                           <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-                          <p className="animate-pulse">GEMINI PRO ANALYZING MEDIA...</p>
+                          <p className="animate-pulse uppercase tracking-widest">Analyzing Media Stream...</p>
                         </div>
                       ) : forensicResult ? (
                         <div className="text-zinc-300 whitespace-pre-wrap">
                           {forensicResult}
                         </div>
                       ) : (
-                        <p className="text-zinc-600 text-center mt-12 italic">Upload a screenshot or recording of suspicious activity for AI-powered forensic analysis.</p>
+                        <p className="text-zinc-600 text-center mt-12 italic text-[10px] uppercase tracking-widest">Upload suspicious media for neural analysis.</p>
                       )}
                     </div>
                   </div>
@@ -782,46 +1144,68 @@ export default function App() {
 
                 {/* Threat Visualization */}
                 <div className="glass-panel p-6">
-                  <div className="flex items-center justify-between mb-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                     <h3 className="text-sm font-bold tracking-widest flex items-center gap-2">
                       <ImageIcon className="w-5 h-5 text-purple-400" />
-                      UNFILTERED THREAT VISUALIZER (NANO BANANA)
+                      HIGH-FIDELITY THREAT VISUALIZER
                     </h3>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center bg-black/40 border border-zinc-800 rounded-sm p-1">
+                        {(['1K', '2K', '4K'] as const).map((size) => (
+                          <button
+                            key={size}
+                            onClick={() => setImageSize(size)}
+                            className={cn(
+                              "px-3 py-1 text-[9px] font-bold rounded-sm transition-all",
+                              imageSize === size ? "bg-[#C5A059] text-black" : "text-zinc-500 hover:text-zinc-300"
+                            )}
+                          >
+                            {size}
+                          </button>
+                        ))}
+                      </div>
                       <input 
                         type="text" 
                         value={imagePrompt}
                         onChange={(e) => setImagePrompt(e.target.value)}
-                        placeholder="Enter security threat description..."
-                        className="bg-black/40 border border-zinc-800 rounded-sm px-3 py-1.5 text-xs text-zinc-300 focus:border-purple-500/50 outline-none w-64"
+                        placeholder="Enter threat description..."
+                        className="bg-black/40 border border-zinc-800 rounded-sm px-3 py-1.5 text-xs text-zinc-300 focus:border-[#C5A059]/50 outline-none w-64"
                       />
                       <button 
                         onClick={handleGenerateVisual}
                         disabled={isGenerating}
-                        className="px-4 py-1.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 text-[10px] font-bold tracking-widest rounded-sm hover:bg-purple-500/20 transition-all disabled:opacity-50"
+                        className="px-4 py-1.5 bg-purple-500/10 border border-purple-500/30 text-purple-400 text-[10px] font-bold tracking-widest rounded-sm hover:bg-purple-500/20 transition-all disabled:opacity-50 flex items-center gap-2"
                       >
-                        {isGenerating ? 'GENERATING...' : 'VISUALIZE'}
+                        {isGenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        GENERATE
                       </button>
                     </div>
                   </div>
-                  
-                  <div className="aspect-video lg:aspect-[21/9] bg-black/40 border border-zinc-800 rounded-sm flex items-center justify-center overflow-hidden relative">
+
+                  <div className="aspect-video bg-black/40 border border-zinc-800 rounded-sm overflow-hidden relative group">
                     {isGenerating ? (
-                      <div className="flex flex-col items-center gap-4 text-zinc-500">
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm z-10">
                         <Loader2 className="w-12 h-12 animate-spin text-purple-400" />
-                        <p className="animate-pulse tracking-widest text-[10px]">RENDERING AI VISUALIZATION...</p>
+                        <div className="text-center">
+                          <p className="text-xs font-bold text-purple-400 animate-pulse uppercase tracking-widest">Synthesizing Neural Imagery...</p>
+                          <p className="text-[10px] text-zinc-500 mt-1 uppercase">Resolution: {imageSize}</p>
+                        </div>
                       </div>
                     ) : generatedImage ? (
-                      <img src={generatedImage} alt="Threat Visualization" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      <>
+                        <img src={generatedImage} alt="Threat Visual" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                          <button className="p-3 bg-white/10 hover:bg-white/20 rounded-full backdrop-blur-md transition-all border border-white/20">
+                            <Maximize2 className="w-6 h-6 text-white" />
+                          </button>
+                        </div>
+                      </>
                     ) : (
-                      <div className="text-center px-12">
-                        <Sparkles className="w-16 h-16 text-zinc-800 mx-auto mb-4" />
-                        <p className="text-zinc-600 text-xs italic">Generate a visual representation of any security threat using Gemini Flash Image.</p>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600">
+                        <ImageIcon className="w-16 h-16 mb-4 opacity-10" />
+                        <p className="text-[10px] uppercase tracking-widest">No visual data synthesized</p>
                       </div>
                     )}
-                    <div className="absolute bottom-4 right-4 bg-black/80 border border-zinc-800 px-3 py-1 rounded-sm text-[8px] text-zinc-500 font-bold tracking-widest uppercase">
-                      Forensic Mode: High Latitude
-                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -836,28 +1220,28 @@ export default function App() {
               >
                 <div className="flex items-center gap-2 mb-4 text-zinc-500 border-b border-zinc-800 pb-2">
                   <Terminal className="w-4 h-4" />
-                  <span className="text-[10px] font-bold tracking-widest uppercase">OMC_SHELL v1.0</span>
+                  <span className="text-[10px] font-bold tracking-widest uppercase">FORGE_SHELL v2.0</span>
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-2 mb-4 custom-scrollbar">
-                  <p className="text-zinc-500 italic"># One Man Computer Security Shell initialized.</p>
-                  <p className="text-zinc-500 italic"># Type 'help' for available commands.</p>
+                  <p className="text-zinc-500 italic"># Context Forge Neural Shell initialized.</p>
+                  <p className="text-zinc-500 italic"># Neural link established with operator: {user.displayName}</p>
                   <div className="flex gap-2">
-                    <span className="text-[#00FF41]">omc@operator:~$</span>
-                    <span className="text-white">omc --status</span>
+                    <span className="text-[#C5A059]">forge@operator:~$</span>
+                    <span className="text-white">forge --status</span>
                   </div>
                   <div className="pl-4 space-y-1 text-zinc-400">
-                    <p>[+] Behavioral engine: ACTIVE</p>
-                    <p>[+] Network listener: ATTACHED (eth0)</p>
-                    <p>[+] File integrity: MONITORING (642 files)</p>
-                    <p>[+] Privilege guard: ENABLED</p>
+                    <p>[+] Neural bridging: ACTIVE</p>
+                    <p>[+] Context depth: 8.4K tokens</p>
+                    <p>[+] Steganographic vault: LOCKED</p>
+                    <p>[+] Multi-modal sync: READY</p>
                   </div>
                   <div className="flex gap-2">
-                    <span className="text-[#00FF41]">omc@operator:~$</span>
+                    <span className="text-[#C5A059]">forge@operator:~$</span>
                     <span className="animate-pulse">_</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[#00FF41]">omc@operator:~$</span>
+                  <span className="text-[#C5A059]">forge@operator:~$</span>
                   <input 
                     type="text" 
                     className="flex-1 bg-transparent border-none focus:ring-0 p-0 text-white outline-none"
@@ -879,17 +1263,18 @@ export default function App() {
       />
 
       {/* Footer Info */}
-      <footer className="h-8 border-t border-[#2A2A2E] bg-[#0D0D0F] flex items-center justify-between px-6 text-[9px] text-zinc-600 font-bold tracking-widest">
+      <footer className="h-8 border-t border-[#1A1A1C] bg-[#0D0D0F] flex items-center justify-between px-6 text-[9px] text-zinc-600 font-bold tracking-widest">
         <div className="flex items-center gap-4">
           <span>UPTIME: 14:22:05</span>
-          <span>SENSORS: 12/12 ACTIVE</span>
-          <span>LAST SCAN: 02:15:45</span>
+          <span>NEURAL CORES: 128/128 ACTIVE</span>
+          <span>CONTEXT SYNC: 100%</span>
         </div>
         <div className="flex items-center gap-4">
-          <span className="text-[#00FF41]/50">ENCRYPTION: AES-256-GCM</span>
-          <span>LOCAL_MODE: ENABLED</span>
+          <span className="text-[#C5A059]/50">ENCRYPTION: NEURAL-256-GCM</span>
+          <span>OPERATOR: {user.displayName?.toUpperCase()}</span>
         </div>
       </footer>
     </div>
+    </ErrorBoundary>
   );
 }

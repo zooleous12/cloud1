@@ -6,17 +6,21 @@
 
 @layer base {
   body {
-    @apply bg-[#0A0A0B] text-[#E0E0E0] font-mono selection:bg-[#00FF41] selection:text-black;
+    @apply bg-[#050505] text-[#E5E5E5] font-mono selection:bg-[#00F5FF] selection:text-black;
   }
 }
 
 @layer components {
   .glass-panel {
-    @apply bg-[#121214] border border-[#2A2A2E] rounded-sm shadow-2xl;
+    @apply bg-[#0D0D0F] border border-[#1A1A1C] rounded-sm shadow-2xl;
   }
   
   .terminal-text {
-    @apply text-[#00FF41] drop-shadow-[0_0_5px_rgba(0,255,65,0.3)];
+    @apply text-[#00F5FF] drop-shadow-[0_0_8px_rgba(0,245,255,0.4)];
+  }
+
+  .gold-accent {
+    @apply text-[#00F5FF] border-[#00F5FF];
   }
 
   .status-indicator {
@@ -32,13 +36,13 @@
   background: linear-gradient(
     0deg,
     rgba(0, 0, 0, 0) 0%,
-    rgba(0, 255, 65, 0.02) 50%,
+    rgba(0, 245, 255, 0.03) 50%,
     rgba(0, 0, 0, 0) 100%
   );
-  opacity: 0.1;
+  opacity: 0.15;
   position: absolute;
   bottom: 100%;
-  animation: scanline 10s linear infinite;
+  animation: scanline 12s linear infinite;
 }
 
 @keyframes scanline {

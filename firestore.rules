@@ -24,6 +24,13 @@ service cloud.firestore {
       allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
     }
 
+    // Chat messages
+    match /chat_messages/{messageId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+
     // Chat sessions
     match /chatSessions/{sessionId} {
       allow read, write: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid);

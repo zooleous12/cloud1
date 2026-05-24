@@ -1,5 +1,6 @@
 {
   "name": "Context Forge",
   "description": "A cinematic, high-performance AI context orchestration platform featuring advanced neural bridging, steganographic vaults, and multi-modal intelligence.",
-  "requestFramePermissions": ["camera", "microphone"]
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

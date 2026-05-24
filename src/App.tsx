@@ -28,7 +28,14 @@ import {
   LogOut,
   Send,
   Zap,
-  Maximize2
+  Maximize2,
+  Cloud,
+  Folder,
+  File,
+  FileText,
+  Eye,
+  Plus,
+  Database
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -53,8 +60,8 @@ import {
   generateHighQualityImage, 
   editOrCreateImage 
 } from './services/gemini';
-import { auth, db, signInWithGoogle, logout } from './firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, db, signInWithGoogle, logout } from './lib/firebase';
+import { onAuthStateChanged, User, GoogleAuthProvider } from 'firebase/auth';
 import { collection, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
 enum OperationType {
@@ -222,11 +229,11 @@ const Header = ({ user }: { user: User | null }) => (
             </div>
           </div>
         )}
-        <button className="p-2 hover:bg-zinc-800 rounded-sm transition-colors relative">
+        <button onClick={() => alert("Notification Center is currently synced and clear.")} className="p-2 hover:bg-zinc-800 rounded-sm transition-colors relative">
           <Bell className="w-5 h-5 text-zinc-400" />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-[#C5A059] rounded-full border-2 border-[#0D0D0F]" />
         </button>
-        <button className="p-2 hover:bg-zinc-800 rounded-sm transition-colors">
+        <button onClick={() => alert("Settings module is locked down by Vault protocol. Local settings only.")} className="p-2 hover:bg-zinc-800 rounded-sm transition-colors">
           <Settings className="w-5 h-5 text-zinc-400" />
         </button>
       </div>
@@ -240,6 +247,7 @@ const Sidebar = ({ activeTab, setActiveTab, user }: { activeTab: string, setActi
     { id: 'processes', icon: Cpu, label: 'PROCESSES' },
     { id: 'network', icon: Network, label: 'NETWORK' },
     { id: 'files', icon: FileWarning, label: 'INTEGRITY' },
+    { id: 'drive', icon: Cloud, label: 'CLOUD DRIVE' },
     { id: 'chat', icon: MessageSquare, label: 'NEURAL CHAT' },
     { id: 'forensics', icon: BrainCircuit, label: 'AI FORENSICS' },
     { id: 'terminal', icon: Terminal, label: 'TERMINAL' },
@@ -366,6 +374,170 @@ const AlertModal = ({ isOpen, onClose, event, onAcknowledge, onKill }: {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // --- Google Drive / Picker States ---
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [driveFiles, setDriveFiles] = useState<any[]>([]);
+  const [isDriveLoading, setIsDriveLoading] = useState(false);
+  const [driveError, setDriveError] = useState<string | null>(null);
+  const [driveSearchQuery, setDriveSearchQuery] = useState('');
+  const [selectedDriveFile, setSelectedDriveFile] = useState<any | null>(null);
+  const [driveFileContent, setDriveFileContent] = useState<string | null>(null);
+  const [isContentLoading, setIsContentLoading] = useState(false);
+
+  // --- Helper to retrieve Drive File content ---
+  const fetchFileContent = async (fileId: string, mimeType: string, token: string) => {
+    let url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    
+    // Google Docs, Sheets, Slides need to be exported
+    if (mimeType === 'application/vnd.google-apps.document') {
+      url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+    } else if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+      url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
+    } else if (mimeType === 'application/vnd.google-apps.presentation') {
+      url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+    }
+    
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    
+    if (!res.ok) {
+      if (res.status === 403 || res.status === 401) {
+        throw new Error("ACCESS_DENIED: Operational privileges insufficient or handshake expired.");
+      }
+      throw new Error(`HTTP_ERROR [${res.status}]: Failed to fetch document stream.`);
+    }
+    
+    return await res.text();
+  };
+
+  const fetchDriveFiles = async (token: string, searchSnippet?: string) => {
+    setIsDriveLoading(true);
+    setDriveError(null);
+    try {
+      let q = "trashed = false";
+      if (searchSnippet) {
+        q += ` and name contains '${searchSnippet.replace(/'/g, "\\'")}'`;
+      }
+      const url = `https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,size,modifiedTime)&q=${encodeURIComponent(q)}&pageSize=30`;
+      
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          throw new Error("UNAUTHORIZED_DECRYPT: Link handshake expired or permissions revoked.");
+        }
+        throw new Error(`CLUSTER_REFRACTORY_${res.status}: Core failed responding.`);
+      }
+      
+      const data = await res.json();
+      setDriveFiles(data.files || []);
+    } catch (err: any) {
+      console.error("Failed fetching drive assets:", err);
+      setDriveError(err.message || "Failed retrieving cloud nodes.");
+    } finally {
+      setIsDriveLoading(false);
+    }
+  };
+
+  const handleDriveConnect = async () => {
+    setDriveError(null);
+    setIsDriveLoading(true);
+    try {
+      const result = await signInWithGoogle();
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+        await fetchDriveFiles(credential.accessToken);
+      } else {
+        throw new Error("Unable to extract Google OAuth access token. Please authorize all requested permissions.");
+      }
+    } catch (err: any) {
+      console.error("Drive handshake failure:", err);
+      setDriveError(err.message || String(err));
+    } finally {
+      setIsDriveLoading(false);
+    }
+  };
+
+  const handleRefreshDrive = () => {
+    if (googleAccessToken) {
+      fetchDriveFiles(googleAccessToken, driveSearchQuery);
+    }
+  };
+
+  const handleSelectDriveFile = (file: any) => {
+    setSelectedDriveFile(file);
+    setDriveFileContent(null);
+  };
+
+  const handlePreviewSelectedFile = async () => {
+    if (!selectedDriveFile || !googleAccessToken) return;
+    setIsContentLoading(true);
+    try {
+      const content = await fetchFileContent(selectedDriveFile.id, selectedDriveFile.mimeType, googleAccessToken);
+      setDriveFileContent(content);
+    } catch (err: any) {
+      console.error("Preview load failure:", err);
+      setDriveFileContent(`[SYNC_ERROR]: ${err.message || String(err)}`);
+    } finally {
+      setIsContentLoading(false);
+    }
+  };
+
+  const handleLoadIntoChat = async () => {
+    if (!selectedDriveFile || !googleAccessToken || !user) return;
+    setIsContentLoading(true);
+    try {
+      let content = driveFileContent;
+      if (!content) {
+        content = await fetchFileContent(selectedDriveFile.id, selectedDriveFile.mimeType, googleAccessToken);
+        setDriveFileContent(content);
+      }
+      
+      const previewText = content.length > 1500 ? content.slice(0, 1500) + '...' : content;
+      
+      await addDoc(collection(db, 'chat_messages'), {
+        userId: user.uid,
+        role: 'user',
+        content: `Connect Google Drive Context Node:\nFilename: ${selectedDriveFile.name}\nNode ID: ${selectedDriveFile.id}\nContent:\n"""\n${previewText}\n"""\n\nAnalyze this imported context file.`,
+        timestamp: serverTimestamp()
+      });
+      
+      setActiveTab('chat');
+    } catch (err: any) {
+      console.error("Load into chat failed:", err);
+      alert(`CONTEXT_LOAD_FAILED: ${err.message}`);
+    } finally {
+      setIsContentLoading(false);
+    }
+  };
+
+  const handleSignIn = async () => {
+    setAuthError(null);
+    try {
+      const result = await signInWithGoogle();
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+      }
+    } catch (err: any) {
+      console.error('Sign in failed:', err);
+      let errMsg = err.message || String(err);
+      if (err.code === 'auth/popup-blocked' || errMsg.includes('popup-blocked')) {
+        errMsg = 'Biometric popup blocked by browser. Under sandbox security constraints, some browsers restrict popups. Please enable popups for this site, or open this application in a new tab.';
+      } else if (err.code === 'auth/cancelled-popup-request' || errMsg.includes('cancelled-popup-request') || err.message?.includes('cancelled')) {
+        errMsg = 'The neural bridge handshaking was cancelled. Please try again.';
+      } else {
+        errMsg = `biometric_sync_error: ${err.message || String(err)}`;
+      }
+      setAuthError(errMsg);
+    }
+  };
   const [activeTab, setActiveTab] = useState('overview');
   const [isAlertOpen, setIsAlertOpen] = useState(false);
   const [currentAlert, setCurrentAlert] = useState<SystemEvent | null>(null);
@@ -484,13 +656,17 @@ export default function App() {
     setIsChatLoading(true);
 
     try {
-      // Save user message to Firestore
-      await addDoc(collection(db, 'chat_messages'), {
-        userId: user.uid,
-        role: 'user',
-        content: userMessage,
-        timestamp: serverTimestamp()
-      });
+      try {
+        // Save user message to Firestore
+        await addDoc(collection(db, 'chat_messages'), {
+          userId: user.uid,
+          role: 'user',
+          content: userMessage,
+          timestamp: serverTimestamp()
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, 'chat_messages');
+      }
 
       const messages = [...chatHistory, { role: 'user', content: userMessage }];
       const response = await generateChatResponse(messages, 'general', useThinking);
@@ -498,8 +674,8 @@ export default function App() {
       setChatHistory(prev => [...prev, { role: 'user', content: userMessage }, { role: 'model', content: response }]);
     } catch (error) {
       console.error('Chat failed:', error);
-      if (error instanceof Error && error.message.includes('permission-denied')) {
-        handleFirestoreError(error, OperationType.WRITE, 'chat_messages');
+      if (error instanceof Error && (error.message.includes('operationType') || error.message.includes('permission-denied'))) {
+        throw error;
       }
     } finally {
       setIsChatLoading(false);
@@ -617,8 +793,28 @@ export default function App() {
             <p className="text-xs text-zinc-400 leading-relaxed">
               Access restricted to authorized operators. Neural bridging requires biometric synchronization.
             </p>
+            {authError && (
+              <div className="bg-red-950/40 border border-red-500/30 p-4 rounded-sm text-left font-mono space-y-2">
+                <div className="text-red-400 text-[10px] font-bold uppercase tracking-wider">► BIOMETRIC_SYNC_FAULT</div>
+                <div className="text-zinc-300 text-[11px] leading-relaxed">{authError}</div>
+                <div className="pt-2 flex items-center gap-3">
+                  <button 
+                    onClick={() => window.open(window.location.href, '_blank')}
+                    className="px-2 py-1 bg-red-900/40 hover:bg-red-900/60 text-red-200 border border-red-800 text-[9px] uppercase font-bold tracking-wider rounded-sm transition-all"
+                  >
+                    Open in New Tab
+                  </button>
+                  <button 
+                    onClick={() => setAuthError(null)}
+                    className="text-zinc-500 hover:text-zinc-300 text-[9px] uppercase font-bold tracking-wider"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
             <button 
-              onClick={signInWithGoogle}
+              onClick={handleSignIn}
               className="w-full py-4 bg-[#C5A059] hover:bg-[#D4AF37] text-black text-xs font-bold tracking-[0.2em] transition-all rounded-sm flex items-center justify-center gap-3"
             >
               <UserCheck className="w-4 h-4" />
@@ -743,7 +939,7 @@ export default function App() {
                         <p className="text-[10px] text-zinc-600 italic">No security events logged.</p>
                       )}
                     </div>
-                    <button className="mt-4 w-full py-2 text-[10px] font-bold text-zinc-500 hover:text-[#C5A059] border border-zinc-800 hover:border-[#C5A059]/30 transition-all uppercase tracking-widest">
+                    <button onClick={() => alert("Audit log export requires elevated privileges.")} className="mt-4 w-full py-2 text-[10px] font-bold text-zinc-500 hover:text-[#C5A059] border border-zinc-800 hover:border-[#C5A059]/30 transition-all uppercase tracking-widest">
                       View Audit Log
                     </button>
                   </div>
@@ -757,7 +953,7 @@ export default function App() {
                         <Lock className="w-4 h-4 text-blue-400" />
                         FILE INTEGRITY MONITOR
                       </h3>
-                      <button className="text-[10px] text-zinc-500 hover:text-white flex items-center gap-1">
+                      <button onClick={fetchData} className="text-[10px] text-zinc-500 hover:text-white flex items-center gap-1">
                         <RefreshCw className="w-3 h-3" /> RESCAN
                       </button>
                     </div>
@@ -880,9 +1076,9 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-sm">
                       <Search className="w-4 h-4 text-zinc-500" />
-                      <input type="text" placeholder="SEARCH PID/NAME..." className="bg-transparent text-xs focus:outline-none w-48" />
+                      <input type="text" placeholder="SEARCH PID/NAME..." className="bg-transparent text-xs focus:outline-none w-48 text-zinc-200" />
                     </div>
-                    <button className="p-2 bg-zinc-900 border border-zinc-800 hover:border-[#00FF41]/30 rounded-sm transition-all">
+                    <button onClick={fetchData} className="p-2 bg-zinc-900 border border-zinc-800 hover:border-[#00FF41]/30 rounded-sm transition-all">
                       <RefreshCw className="w-4 h-4 text-zinc-400" />
                     </button>
                   </div>
@@ -1210,6 +1406,392 @@ export default function App() {
                 </div>
               </motion.div>
             )}
+
+            {activeTab === 'network' && (
+              <motion.div 
+                key="network"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="glass-panel overflow-hidden"
+              >
+                <div className="p-6 border-b border-[#1A1A1C] bg-zinc-900/10 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-bold tracking-widest mb-1 flex items-center gap-2">
+                      <Network className="w-5 h-5 text-emerald-400" />
+                      ACTIVE NETWORK CONNECTIONS
+                    </h2>
+                    <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Real-time socket communication telemetry</p>
+                  </div>
+                  <button onClick={fetchData} className="px-4 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 rounded-sm text-xs font-bold uppercase transition-all">
+                    RESCAN
+                  </button>
+                </div>
+                <div className="p-0">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="text-zinc-500 border-b border-[#1A1A1C] bg-zinc-900/20 font-bold">
+                        <th className="px-6 py-4 uppercase tracking-wider">PROTOCOL</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">REMOTE ADDR</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">LOCAL PORT</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">REMOTE PORT</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">STATE</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">PROCESS</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1A1A1C]">
+                      {connections.map((conn, i) => (
+                        <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-6 py-4 font-mono text-zinc-400">{conn.protocol}</td>
+                          <td className="px-6 py-4 font-mono text-zinc-300">{conn.remoteAddress}</td>
+                          <td className="px-6 py-4 text-zinc-400 font-mono">{conn.localPort}</td>
+                          <td className="px-6 py-4 text-zinc-400 font-mono">{conn.remotePort}</td>
+                          <td className="px-6 py-4 font-mono text-zinc-400">{conn.state}</td>
+                          <td className="px-6 py-4 text-zinc-300 font-bold">{conn.processName}</td>
+                          <td className="px-6 py-4">
+                            {conn.isAuthorized ? (
+                              <div className="flex items-center gap-2 text-emerald-500 font-bold uppercase text-[10px] tracking-wider">
+                                <CheckCircle2 className="w-4 h-4" />
+                                AUTHORIZED
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 text-red-500 font-bold uppercase text-[10px] tracking-wider animate-pulse">
+                                <AlertTriangle className="w-4 h-4" />
+                                EXFILTRATION RISK
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'files' && (
+              <motion.div 
+                key="files"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                className="glass-panel overflow-hidden"
+              >
+                <div className="p-6 border-b border-[#1A1A1C] bg-zinc-900/10 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-bold tracking-widest mb-1 flex items-center gap-2">
+                      <Lock className="w-5 h-5 text-blue-400" />
+                      FILE INTEGRITY STREAM
+                    </h2>
+                    <p className="text-[10px] text-zinc-500 uppercase tracking-wider">Neural file alteration monitoring & steganographic hash audits</p>
+                  </div>
+                  <button onClick={fetchData} className="px-4 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 rounded-sm text-xs font-bold uppercase transition-all">
+                    RE-AUDIT HASHES
+                  </button>
+                </div>
+                <div className="p-0">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="text-zinc-500 border-b border-[#1A1A1C] bg-zinc-900/20 font-bold">
+                        <th className="px-6 py-4 uppercase tracking-wider">TELEMETRY PATH</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">HASH ID (SHA-256)</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">LAST CHECK</th>
+                        <th className="px-6 py-4 uppercase tracking-wider">STATE STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1A1A1C]">
+                      {files.map((file, i) => (
+                        <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-6 py-4 font-mono text-zinc-200 select-all truncate max-w-[250px]" title={file.path}>{file.path}</td>
+                          <td className="px-6 py-4 font-mono text-zinc-500 select-all font-light uppercase text-[10px] tracking-wider max-w-[200px] truncate" title={file.hash}>{file.hash}</td>
+                          <td className="px-6 py-4 text-zinc-400">{file.lastChecked}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className={cn(
+                                "w-1.5 h-1.5 rounded-full",
+                                file.status === 'intact' ? 'bg-emerald-500' : 'bg-red-500 animate-pulse'
+                              )} />
+                              <span className={cn(
+                                "uppercase font-bold tracking-widest text-[10px]",
+                                file.status === 'intact' ? 'text-emerald-500' : 'text-red-500'
+                              )}>{file.status}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'drive' && (
+              <motion.div 
+                key="drive"
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="h-full flex flex-col glass-panel overflow-hidden"
+              >
+                <div className="p-6 border-b border-[#1A1A1C] flex items-center justify-between bg-zinc-900/20">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-[#C5A059]/10 rounded-sm border border-[#C5A059]/20">
+                      <Cloud className="w-5 h-5 text-[#C5A059]" />
+                    </div>
+                    <div>
+                      <h2 className="text-sm font-bold tracking-widest uppercase">COGNITIVE DRIVE HANDSHAKE</h2>
+                      <p className="text-[10px] text-zinc-500 uppercase tracking-widest">Operator File Integration & Multi-Modal Linking</p>
+                    </div>
+                  </div>
+                  {googleAccessToken && (
+                    <div className="flex items-center gap-4">
+                      <button 
+                        onClick={handleRefreshDrive}
+                        disabled={isDriveLoading}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white rounded-sm text-[10px] font-bold transition-all"
+                      >
+                        <RefreshCw className={cn("w-3.5 h-3.5", isDriveLoading && "animate-spin")} />
+                        RE-SCAN DRIVE
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setGoogleAccessToken(null);
+                          setDriveFiles([]);
+                          setSelectedDriveFile(null);
+                        }}
+                        className="text-[10px] text-red-500 hover:text-red-400 uppercase tracking-widest font-bold font-mono"
+                      >
+                        Disconnect Drive
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {!googleAccessToken ? (
+                  <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-6 text-center max-w-md mx-auto">
+                    <div className="w-16 h-16 bg-[#C5A059]/10 rounded-full flex items-center justify-center border border-[#C5A059]/20 animate-pulse">
+                      <Lock className="w-8 h-8 text-[#C5A059]" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-[#C5A059] mb-2">► DRIVE_VAULT_DECRYPT</h3>
+                      <p className="text-[11px] text-zinc-400 leading-relaxed uppercase">
+                        OPERATIONAL DECRYPTION KEY REQUIRED. ESTABLISH AN ACTIVE LINK TO INTEL CORES ON GOOGLE DRIVE TO BROWSE AND INJECT CRITICAL CODES.
+                      </p>
+                    </div>
+                    <button 
+                      onClick={handleDriveConnect}
+                      className="w-full py-4 bg-gradient-to-r from-[#C5A059] to-[#D4AF37] hover:from-[#D4AF37] hover:to-[#E5C06F] text-black text-xs font-bold tracking-[0.2em] transition-all rounded-sm flex items-center justify-center gap-3 shadow-lg shadow-[#C5A059]/10"
+                    >
+                      <Cloud className="w-4 h-4" />
+                      SYNCHRONIZE GOOGLE DRIVE
+                    </button>
+                    <p className="text-[9px] text-zinc-600 font-mono uppercase tracking-widest">
+                      Protocol: oauth2.workspace_scope // read_write_active
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col lg:flex-row divide-y lg:divide-y-0 lg:divide-x divide-[#1A1A1C] min-h-0 bg-black/20">
+                    <div className="flex-1 flex flex-col min-h-0">
+                      <div className="p-4 border-b border-[#1A1A1C] bg-zinc-900/10 flex items-center gap-3">
+                        <div className="relative flex-1">
+                          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                          <input 
+                            type="text" 
+                            value={driveSearchQuery}
+                            onChange={(e) => setDriveSearchQuery(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleRefreshDrive()}
+                            placeholder="FILTER COGNITIVE FILES..."
+                            className="w-full bg-black/40 border border-zinc-800 rounded-sm pl-9 pr-4 py-2 text-xs text-zinc-300 focus:border-[#C5A059]/50 outline-none transition-all font-mono"
+                          />
+                        </div>
+                        <button 
+                          onClick={handleRefreshDrive}
+                          className="px-4 py-2 bg-zinc-900 hover:bg-zinc-700 border border-zinc-800 text-zinc-300 text-xs font-bold uppercase rounded-sm font-mono tracking-wider transition-all"
+                        >
+                          GO
+                        </button>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+                        {isDriveLoading ? (
+                          <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-3">
+                            <Loader2 className="w-8 h-8 animate-spin text-[#C5A059]" />
+                            <p className="uppercase tracking-widest font-mono text-[10px] animate-pulse">Accessing Secure Cloud Clusters...</p>
+                          </div>
+                        ) : driveError ? (
+                          <div className="bg-red-950/20 border border-red-500/20 p-4 rounded-sm text-center max-w-sm mx-auto my-12 space-y-3">
+                            <div className="text-red-400 font-mono text-xs uppercase tracking-wider font-bold">► CLUSTER_SYNC_ERROR</div>
+                            <p className="text-zinc-400 font-mono text-[10px] leading-relaxed uppercase">{driveError}</p>
+                            <button 
+                              onClick={handleDriveConnect}
+                              className="px-4 py-1.5 bg-red-900/30 hover:bg-red-900/50 border border-red-800 text-red-200 text-[10px] font-bold uppercase rounded-sm tracking-wider transition-all"
+                            >
+                              Sync Credentials
+                            </button>
+                          </div>
+                        ) : driveFiles.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center text-zinc-600 text-center space-y-3">
+                            <Database className="w-12 h-12 mb-2 opacity-20" />
+                            <p className="uppercase tracking-widest font-mono text-[10px]">No cognitive files located in cluster.</p>
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {driveFiles.map((file) => {
+                              const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+                              const isDoc = file.mimeType.includes('document') || file.mimeType.includes('text');
+                              const isSheet = file.mimeType.includes('spreadsheet') || file.mimeType.includes('csv');
+                              const isPresentation = file.mimeType.includes('presentation');
+                              
+                              return (
+                                <div 
+                                  key={file.id}
+                                  onClick={() => handleSelectDriveFile(file)}
+                                  className={cn(
+                                    "p-3 rounded-sm border hover:bg-zinc-900/50 cursor-pointer transition-all flex items-start gap-3 select-none group relative overflow-hidden",
+                                    selectedDriveFile?.id === file.id 
+                                      ? "bg-[#C5A059]/10 border-[#C5A059] shadow-md shadow-[#C5A059]/5" 
+                                      : "bg-black/20 border-zinc-800"
+                                  )}
+                                >
+                                  <div className="mt-1 flex-shrink-0">
+                                    {isFolder ? (
+                                      <Folder className="w-5 h-5 text-[#C5A059]" />
+                                    ) : isDoc ? (
+                                      <FileText className="w-5 h-5 text-blue-400" />
+                                    ) : isSheet ? (
+                                      <Database className="w-5 h-5 text-emerald-400" />
+                                    ) : isPresentation ? (
+                                      <File className="w-5 h-5 text-orange-400" />
+                                    ) : (
+                                      <File className="w-5 h-5 text-zinc-400" />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <h4 className="text-xs font-bold text-zinc-200 font-mono truncate uppercase group-hover:text-white transition-colors">
+                                      {file.name}
+                                    </h4>
+                                    <p className="text-[9px] text-zinc-500 font-mono truncate uppercase mt-0.5">
+                                      {isFolder ? 'FOLDER' : file.mimeType.split('.').pop()?.toUpperCase() || 'FILE'}
+                                    </p>
+                                    {!isFolder && file.size && (
+                                      <span className="text-[9px] text-[#C5A059]/60 font-mono tracking-wider mt-1 block">
+                                        {(parseInt(file.size) / 1024).toFixed(1)} KB
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className={cn(
+                                    "absolute top-2 right-2 w-1.5 h-1.5 rounded-full transition-all",
+                                    selectedDriveFile?.id === file.id ? "bg-[#C5A059]" : "bg-transparent"
+                                  )} />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="w-full lg:w-80 border-t lg:border-t-0 border-[#1A1A1C] bg-[#0A0A0C]/50 p-6 flex flex-col min-h-[300px] lg:min-h-0 overflow-y-auto custom-scrollbar">
+                      {selectedDriveFile ? (
+                        <div className="space-y-6">
+                          <div>
+                            <div className="text-[#C5A059] text-[10px] font-bold font-mono uppercase tracking-[0.2em] mb-2">► COGNITIVE_DATA_NODE</div>
+                            <h3 className="text-sm font-bold font-mono text-zinc-100 uppercase break-all leading-relaxed">
+                              {selectedDriveFile.name}
+                            </h3>
+                          </div>
+
+                          <div className="space-y-3 font-mono text-[10px] bg-black/40 border border-zinc-800/60 p-4 rounded-sm">
+                            <div className="flex justify-between py-1 border-b border-zinc-900">
+                              <span className="text-zinc-500 uppercase">NODE_ID</span>
+                              <span className="text-zinc-300 select-all font-semibold break-all text-right max-w-[150px] truncate" title={selectedDriveFile.id}>{selectedDriveFile.id}</span>
+                            </div>
+                            <div className="flex justify-between py-1 border-b border-zinc-900">
+                              <span className="text-zinc-500 uppercase">MIME_TYPE</span>
+                              <span className="text-zinc-300 text-right truncate max-w-[150px]" title={selectedDriveFile.mimeType}>{selectedDriveFile.mimeType.split('/').pop()}</span>
+                            </div>
+                            {selectedDriveFile.size && (
+                              <div className="flex justify-between py-1 border-b border-zinc-900">
+                                <span className="text-zinc-500 uppercase">CAPACITY</span>
+                                <span className="text-zinc-300 font-semibold uppercase">{(parseInt(selectedDriveFile.size) / 1024).toFixed(1)} KB</span>
+                              </div>
+                            )}
+                            {selectedDriveFile.modifiedTime && (
+                              <div className="flex justify-between py-1">
+                                <span className="text-zinc-500 uppercase">MODIFIED</span>
+                                <span className="text-zinc-400 text-right">{new Date(selectedDriveFile.modifiedTime).toLocaleDateString()}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest font-mono">NODE CONTENT PREVIEW</span>
+                            <div className="relative font-mono text-[9px] bg-zinc-950/70 border border-zinc-900 h-40 rounded-sm p-3 overflow-y-auto overflow-x-hidden custom-scrollbar">
+                              {isContentLoading ? (
+                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-zinc-500">
+                                  <Loader2 className="w-5 h-5 animate-spin text-[#C5A059]" />
+                                  <span className="animate-pulse uppercase tracking-wider text-[8px]">Unlocking cryptographic manifest...</span>
+                                </div>
+                              ) : driveFileContent ? (
+                                <pre className="whitespace-pre-wrap text-zinc-300 pr-2 select-text uppercase break-all">
+                                  {driveFileContent}
+                                </pre>
+                              ) : (
+                                <span className="text-zinc-600 italic uppercase">
+                                  {selectedDriveFile.mimeType === 'application/vnd.google-apps.folder' 
+                                    ? "FOLDER METADATA PREVIEW ONLY" 
+                                    : "Click PREVIEW NODE to fetch decrypted document bytes."}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 pt-2">
+                            {selectedDriveFile.mimeType !== 'application/vnd.google-apps.folder' && (
+                              <button 
+                                onClick={handlePreviewSelectedFile}
+                                disabled={isContentLoading}
+                                className="w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 text-[10px] font-bold uppercase tracking-wider font-mono rounded-sm transition-all flex items-center justify-center gap-2"
+                              >
+                                {isContentLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5" />}
+                                PREVIEW NODE BYTES
+                              </button>
+                            )}
+                            
+                            {selectedDriveFile.mimeType !== 'application/vnd.google-apps.folder' && (
+                              <button 
+                                onClick={handleLoadIntoChat}
+                                disabled={isContentLoading}
+                                className="w-full py-2.5 bg-[#C5A059]/10 hover:bg-[#C5A059]/20 border border-[#C5A059]/30 text-[#C5A059] text-[10px] font-bold uppercase tracking-wider font-mono rounded-sm transition-all flex items-center justify-center gap-2"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                LOAD INTO NEURAL CHAT
+                              </button>
+                            )}
+
+                            <button 
+                              onClick={() => setSelectedDriveFile(null)}
+                              className="w-full py-2 text-zinc-600 hover:text-zinc-400 text-[9px] font-bold uppercase tracking-wider font-mono transition-all text-center"
+                            >
+                              DISMISS CONTEXT NODE
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-center text-zinc-600 p-4">
+                          <Eye className="w-10 h-10 mb-3 opacity-15" />
+                          <p className="uppercase tracking-widest font-mono text-[10px] leading-relaxed">
+                            No telemetry file highlighted. Select a document node inside the manifest list to inspect metadata & loaded content bytes.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            )}
+
             {activeTab === 'terminal' && (
               <motion.div 
                 key="terminal"
